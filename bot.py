@@ -1,88 +1,69 @@
 import os
 import logging
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import subprocess
 import tempfile
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# دریافت مقادیر از Variableهای محیطی
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 INTRO_VIDEO_PATH = "/app/intro.mp4"
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ درحال پردازش... (فایل‌های بزرگ ۵-۱۰ دقیقه طول می‌کشد)")
+app = Client("intro_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+@app.on_message(filters.command("start") & filters.private)
+async def start_cmd(client: Client, message: Message):
+    await message.reply_text("سلام! 👋\nویدیو رو بفرست تا اینترو رو بدون افت کیفیت بهش بچسبونم.")
+
+@app.on_message(filters.video & filters.private)
+async def handle_video(client: Client, message: Message):
+    status_msg = await message.reply_text("⏳ در حال دریافت و پردازش ویدیو...")
     
     try:
-        video_file = await update.message.video.get_file()
-        
         with tempfile.TemporaryDirectory() as temp_dir:
             input_video = os.path.join(temp_dir, "input.mp4")
-            intro_norm = os.path.join(temp_dir, "intro_norm.mp4")
-            input_norm = os.path.join(temp_dir, "input_norm.mp4")
             output_video = os.path.join(temp_dir, "output.mp4")
-            
-            logger.info("Downloading...")
-            await video_file.download_to_drive(input_video)
-            
-            # مرحله 1: نرمال کردن intro (CRF 0 = بدون کیفیت بخش)
-            logger.info("Normalizing intro (lossless)...")
-            cmd_intro = [
-                'ffmpeg', '-i', INTRO_VIDEO_PATH,
-                '-c:v', 'libx264', '-crf', '0', '-preset', 'ultrafast',
-                '-c:a', 'aac', '-y', intro_norm
-            ]
-            subprocess.run(cmd_intro, capture_output=True, timeout=900)
-            
-            # مرحله 2: نرمال کردن input (CRF 0 = بدون کیفیت بخش)
-            logger.info("Normalizing input (lossless)...")
-            cmd_input = [
-                'ffmpeg', '-i', input_video,
-                '-c:v', 'libx264', '-crf', '0', '-preset', 'ultrafast',
-                '-c:a', 'aac', '-y', input_norm
-            ]
-            subprocess.run(cmd_input, capture_output=True, timeout=900)
-            
-            # مرحله 3: concat (copy = بدون re-encoding دوباره)
-            logger.info("Concatenating...")
             concat_file = os.path.join(temp_dir, "concat.txt")
-            with open(concat_file, 'w') as f:
-                f.write(f"file '{intro_norm}'\nfile '{input_norm}'\n")
             
+            # ۱. دانلود فایل ویدیو (پشتیبانی تا ۲ گیگابایت)
+            logger.info("Downloading video...")
+            await message.download(file_name=input_video)
+            
+            # ۲. ساخت فایل لیست برای FFmpeg
+            with open(concat_file, 'w') as f:
+                f.write(f"file '{INTRO_VIDEO_PATH}'\nfile '{input_video}'\n")
+            
+            # ۳. اتصال سریع بدون انکود مجدد (Stream Copy - بدون افت کیفیت)
+            logger.info("Concatenating video using stream copy...")
             cmd_concat = [
                 'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
                 '-c', 'copy', '-y', output_video
             ]
-            result = subprocess.run(cmd_concat, capture_output=True, timeout=600)
             
-            if not os.path.exists(output_video):
-                logger.error("Output failed")
-                await update.message.reply_text("❌ خرابی")
+            process = subprocess.run(cmd_concat, capture_output=True, text=True)
+            
+            if process.returncode != 0 or not os.path.exists(output_video):
+                logger.error(f"FFmpeg error: {process.stderr}")
+                await status_msg.edit_text("❌ خطا در اتصال ویدیو. مطمئن شوید فرمت و رزولوشن ویدیو با اینترو یکسان است.")
                 return
-            
-            file_size = os.path.getsize(output_video) / (1024*1024*1024)
-            logger.info(f"Output: {file_size:.2f}GB")
-            
-            logger.info("Sending...")
-            with open(output_video, 'rb') as video:
-                await update.message.reply_video(video=video, write_timeout=300)
-    
+
+            # ۴. آپلود ویدیو نهایی
+            await status_msg.edit_text("📤 در حال آپلود و ارسال...")
+            await message.reply_video(
+                video=output_video,
+                caption="✅ اینترو با موفقیت اضافه شد (بدون تغییر کیفیت)."
+            )
+            await status_msg.delete()
+
     except Exception as e:
         logger.error(f"Error: {str(e)}")
-        await update.message.reply_text(f"❌ {str(e)[:50]}")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! 👋\nویدیو بفرست و من اینترو رو بهش می‌چسبونم")
-
-def main():
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN!")
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.COMMAND, start))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    logger.info("Bot started!")
-    app.run_polling()
+        await status_msg.edit_text(f"❌ خطایی رخ داد: {str(e)[:50]}")
 
 if __name__ == '__main__':
-    main()
+    app.run()
+            
