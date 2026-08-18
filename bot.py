@@ -12,7 +12,7 @@ INTRO_VIDEO_PATH = "/app/intro.mp4"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ در حال پردازش...")
+    await update.message.reply_text("⏳ در حال پردازش (۱-۲ دقیقه)...")
     
     try:
         video_file = await update.message.video.get_file()
@@ -24,7 +24,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("Downloading...")
             await video_file.download_to_drive(input_video)
             
-            # استفاده از filter_complex بدون re-encoding
+            # Re-encode بدون compression (CRF 0 = بهترین کیفیت)
             cmd = [
                 'ffmpeg',
                 '-i', INTRO_VIDEO_PATH,
@@ -32,15 +32,18 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 '-filter_complex', '[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[outv][outa]',
                 '-map', '[outv]',
                 '-map', '[outa]',
-                '-c', 'copy',
+                '-c:v', 'libx264',
+                '-crf', '0',          # بدون کیفیت بخش (بهترین)
+                '-preset', 'fast',    # سرعت
+                '-c:a', 'aac',
                 '-y', output_video
             ]
             
             logger.info("Processing...")
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
+            result = subprocess.run(cmd, capture_output=True, timeout=600)
             
-            if not os.path.exists(output_video):
-                logger.error("Output file not created")
+            if not os.path.exists(output_video) or result.returncode != 0:
+                logger.error(f"FFmpeg failed: {result.returncode}")
                 await update.message.reply_text("❌ خرابی")
                 return
             
@@ -49,10 +52,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             logger.info("Sending...")
             with open(output_video, 'rb') as video:
-                await update.message.reply_video(
-                    video=video, 
-                    write_timeout=120
-                )
+                await update.message.reply_video(video=video, write_timeout=120)
     
     except Exception as e:
         logger.error(f"Error: {str(e)}")
