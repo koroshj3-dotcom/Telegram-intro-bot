@@ -12,29 +12,66 @@ INTRO_VIDEO_PATH = "/app/intro.mp4"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ در حال پردازش ویدیو (ممکن است ۱-۲ دقیقه طول بکشد)...")
+    await update.message.reply_text("⏳ در حال چسباندن اینترو...")
     
     try:
         video_file = await update.message.video.get_file()
         
         with tempfile.TemporaryDirectory() as temp_dir:
             input_video = os.path.join(temp_dir, "input.mp4")
-            intro_normalized = os.path.join(temp_dir, "intro_norm.mp4")
-            input_normalized = os.path.join(temp_dir, "input_norm.mp4")
             output_video = os.path.join(temp_dir, "output.mp4")
             
-            # دانلود ویدیو
             logger.info("Downloading video...")
             await video_file.download_to_drive(input_video)
             
-            # نرمال‌کردن intro
-            logger.info("Normalizing intro...")
-            cmd_intro = [
-                'ffmpeg', '-i', INTRO_VIDEO_PATH,
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-                '-c:a', 'aac', '-y', intro_normalized
+            concat_file = os.path.join(temp_dir, "concat.txt")
+            with open(concat_file, 'w') as f:
+                f.write(f"file '{INTRO_VIDEO_PATH}'\nfile '{input_video}'\n")
+            
+            # بدون compression، فقط copy
+            cmd = [
+                'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
+                '-c', 'copy',  # بدون re-encoding
+                '-y', output_video
             ]
-            subprocess.run(cmd_intro, capture_output=True, timeout=60)
+            
+            logger.info("Processing...")
+            result = subprocess.run(cmd, capture_output=True, timeout=300)
+            
+            if result.returncode != 0:
+                logger.error(f"FFmpeg error: {result.stderr.decode()[:200]}")
+                await update.message.reply_text("❌ خرابی")
+                return
+            
+            file_size = os.path.getsize(output_video) / (1024*1024)
+            logger.info(f"Output size: {file_size:.2f} MB")
+            
+            logger.info("Sending video...")
+            with open(output_video, 'rb') as video:
+                await update.message.reply_video(
+                    video=video, 
+                    caption=f"✅ تمام! ({file_size:.1f}MB)", 
+                    write_timeout=120
+                )
+    
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        await update.message.reply_text(f"❌ {str(e)[:100]}")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("سلام! 👋\nویدیو بفرست")
+
+def main():
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN!")
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.COMMAND, start))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    logger.info("Bot started!")
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()            subprocess.run(cmd_intro, capture_output=True, timeout=60)
             
             # نرمال‌کردن input
             logger.info("Normalizing input video...")
