@@ -1,4 +1,5 @@
 import os
+INTRO_VIDEO_PATH = "/app/intro.mp4"  # مسیر درست برای Railway
 import logging
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
