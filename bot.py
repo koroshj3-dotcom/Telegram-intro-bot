@@ -12,7 +12,7 @@ INTRO_VIDEO_PATH = "/app/intro.mp4"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ در حال چسباندن اینترو...")
+    await update.message.reply_text("⏳ در حال پردازش...")
     
     try:
         video_file = await update.message.video.get_file()
@@ -21,95 +21,42 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             input_video = os.path.join(temp_dir, "input.mp4")
             output_video = os.path.join(temp_dir, "output.mp4")
             
-            logger.info("Downloading video...")
+            logger.info("Downloading...")
             await video_file.download_to_drive(input_video)
             
-            concat_file = os.path.join(temp_dir, "concat.txt")
-            with open(concat_file, 'w') as f:
-                f.write(f"file '{INTRO_VIDEO_PATH}'\nfile '{input_video}'\n")
-            
-            # بدون compression، فقط copy
+            # استفاده از filter_complex بدون re-encoding
             cmd = [
-                'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
-                '-c', 'copy',  # بدون re-encoding
+                'ffmpeg',
+                '-i', INTRO_VIDEO_PATH,
+                '-i', input_video,
+                '-filter_complex', '[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[outv][outa]',
+                '-map', '[outv]',
+                '-map', '[outa]',
+                '-c', 'copy',
                 '-y', output_video
             ]
             
             logger.info("Processing...")
             result = subprocess.run(cmd, capture_output=True, timeout=300)
             
-            if result.returncode != 0:
-                logger.error(f"FFmpeg error: {result.stderr.decode()[:200]}")
+            if not os.path.exists(output_video):
+                logger.error("Output file not created")
                 await update.message.reply_text("❌ خرابی")
                 return
             
             file_size = os.path.getsize(output_video) / (1024*1024)
-            logger.info(f"Output size: {file_size:.2f} MB")
+            logger.info(f"Output: {file_size:.2f}MB")
             
-            logger.info("Sending video...")
+            logger.info("Sending...")
             with open(output_video, 'rb') as video:
                 await update.message.reply_video(
                     video=video, 
-                    caption=f"✅ تمام! ({file_size:.1f}MB)", 
                     write_timeout=120
                 )
     
     except Exception as e:
         logger.error(f"Error: {str(e)}")
-        await update.message.reply_text(f"❌ {str(e)[:100]}")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! 👋\nویدیو بفرست")
-
-def main():
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN!")
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.COMMAND, start))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    logger.info("Bot started!")
-    app.run_polling()
-
-if __name__ == '__main__':
-    main()            subprocess.run(cmd_intro, capture_output=True, timeout=60)
-            
-            # نرمال‌کردن input
-            logger.info("Normalizing input video...")
-            cmd_input = [
-                'ffmpeg', '-i', input_video,
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-                '-c:a', 'aac', '-y', input_normalized
-            ]
-            subprocess.run(cmd_input, capture_output=True, timeout=120)
-            
-            # concat
-            logger.info("Concatenating videos...")
-            concat_file = os.path.join(temp_dir, "concat.txt")
-            with open(concat_file, 'w') as f:
-                f.write(f"file '{intro_normalized}'\nfile '{input_normalized}'\n")
-            
-            cmd_concat = [
-                'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
-                '-c', 'copy', '-y', output_video
-            ]
-            result = subprocess.run(cmd_concat, capture_output=True, text=True, timeout=60)
-            
-            if result.returncode != 0:
-                logger.error(f"FFmpeg error: {result.stderr}")
-                await update.message.reply_text(f"❌ خرابی: {result.stderr[:200]}")
-                return
-            
-            logger.info("Sending video...")
-            with open(output_video, 'rb') as video:
-                await update.message.reply_video(
-                    video=video,
-                    caption="✅ تمام!",
-                    write_timeout=60
-                )
-    
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        await update.message.reply_text(f"❌ {str(e)[:100]}")
+        await update.message.reply_text(f"❌ {str(e)[:50]}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("سلام! 👋\nویدیو بفرست")
