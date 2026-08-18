@@ -12,43 +12,54 @@ INTRO_VIDEO_PATH = "/app/intro.mp4"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ در حال پردازش (۱-۲ دقیقه)...")
+    await update.message.reply_text("⏳ درحال پردازش (۲-۳ دقیقه)...")
     
     try:
         video_file = await update.message.video.get_file()
         
         with tempfile.TemporaryDirectory() as temp_dir:
             input_video = os.path.join(temp_dir, "input.mp4")
+            intro_norm = os.path.join(temp_dir, "intro_norm.mp4")
+            input_norm = os.path.join(temp_dir, "input_norm.mp4")
             output_video = os.path.join(temp_dir, "output.mp4")
             
             logger.info("Downloading...")
             await video_file.download_to_drive(input_video)
             
-            # Re-encode بدون compression (CRF 0 = بهترین کیفیت)
-            cmd = [
-                'ffmpeg',
-                '-i', INTRO_VIDEO_PATH,
-                '-i', input_video,
-                '-filter_complex', '[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[outv][outa]',
-                '-map', '[outv]',
-                '-map', '[outa]',
-                '-c:v', 'libx264',
-                '-crf', '0',          # بدون کیفیت بخش (بهترین)
-                '-preset', 'fast',    # سرعت
-                '-c:a', 'aac',
-                '-y', output_video
+            # مرحله 1: نرمال کردن intro
+            logger.info("Normalizing intro...")
+            cmd_intro = [
+                'ffmpeg', '-i', INTRO_VIDEO_PATH,
+                '-c:v', 'libx264', '-crf', '0', '-preset', 'fast',
+                '-c:a', 'aac', '-y', intro_norm
             ]
+            subprocess.run(cmd_intro, capture_output=True, timeout=300)
             
-            logger.info("Processing...")
-            result = subprocess.run(cmd, capture_output=True, timeout=600)
+            # مرحله 2: نرمال کردن input
+            logger.info("Normalizing input...")
+            cmd_input = [
+                'ffmpeg', '-i', input_video,
+                '-c:v', 'libx264', '-crf', '0', '-preset', 'fast',
+                '-c:a', 'aac', '-y', input_norm
+            ]
+            subprocess.run(cmd_input, capture_output=True, timeout=300)
             
-            if not os.path.exists(output_video) or result.returncode != 0:
-                logger.error(f"FFmpeg failed: {result.returncode}")
+            # مرحله 3: concat
+            logger.info("Concatenating...")
+            concat_file = os.path.join(temp_dir, "concat.txt")
+            with open(concat_file, 'w') as f:
+                f.write(f"file '{intro_norm}'\nfile '{input_norm}'\n")
+            
+            cmd_concat = [
+                'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
+                '-c', 'copy', '-y', output_video
+            ]
+            result = subprocess.run(cmd_concat, capture_output=True, timeout=300)
+            
+            if not os.path.exists(output_video):
+                logger.error("Output failed")
                 await update.message.reply_text("❌ خرابی")
                 return
-            
-            file_size = os.path.getsize(output_video) / (1024*1024)
-            logger.info(f"Output: {file_size:.2f}MB")
             
             logger.info("Sending...")
             with open(output_video, 'rb') as video:
