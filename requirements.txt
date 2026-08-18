@@ -1,2 +1,2 @@
-python-telegram-bot==20.4
-requests==2.31.0
+pyrogram==2.0.106
+tgcrypto==1.2.5
