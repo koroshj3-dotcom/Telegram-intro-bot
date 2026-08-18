@@ -12,7 +12,7 @@ INTRO_VIDEO_PATH = "/app/intro.mp4"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ درحال پردازش (۲-۳ دقیقه)...")
+    await update.message.reply_text("⏳ درحال پردازش... (فایل‌های بزرگ ۵-۱۰ دقیقه طول می‌کشد)")
     
     try:
         video_file = await update.message.video.get_file()
@@ -26,25 +26,25 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("Downloading...")
             await video_file.download_to_drive(input_video)
             
-            # مرحله 1: نرمال کردن intro
-            logger.info("Normalizing intro...")
+            # مرحله 1: نرمال کردن intro (CRF 0 = بدون کیفیت بخش)
+            logger.info("Normalizing intro (lossless)...")
             cmd_intro = [
                 'ffmpeg', '-i', INTRO_VIDEO_PATH,
-                '-c:v', 'libx264', '-crf', '0', '-preset', 'fast',
+                '-c:v', 'libx264', '-crf', '0', '-preset', 'ultrafast',
                 '-c:a', 'aac', '-y', intro_norm
             ]
-            subprocess.run(cmd_intro, capture_output=True, timeout=300)
+            subprocess.run(cmd_intro, capture_output=True, timeout=900)
             
-            # مرحله 2: نرمال کردن input
-            logger.info("Normalizing input...")
+            # مرحله 2: نرمال کردن input (CRF 0 = بدون کیفیت بخش)
+            logger.info("Normalizing input (lossless)...")
             cmd_input = [
                 'ffmpeg', '-i', input_video,
-                '-c:v', 'libx264', '-crf', '0', '-preset', 'fast',
+                '-c:v', 'libx264', '-crf', '0', '-preset', 'ultrafast',
                 '-c:a', 'aac', '-y', input_norm
             ]
-            subprocess.run(cmd_input, capture_output=True, timeout=300)
+            subprocess.run(cmd_input, capture_output=True, timeout=900)
             
-            # مرحله 3: concat
+            # مرحله 3: concat (copy = بدون re-encoding دوباره)
             logger.info("Concatenating...")
             concat_file = os.path.join(temp_dir, "concat.txt")
             with open(concat_file, 'w') as f:
@@ -54,23 +54,26 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
                 '-c', 'copy', '-y', output_video
             ]
-            result = subprocess.run(cmd_concat, capture_output=True, timeout=300)
+            result = subprocess.run(cmd_concat, capture_output=True, timeout=600)
             
             if not os.path.exists(output_video):
                 logger.error("Output failed")
                 await update.message.reply_text("❌ خرابی")
                 return
             
+            file_size = os.path.getsize(output_video) / (1024*1024*1024)
+            logger.info(f"Output: {file_size:.2f}GB")
+            
             logger.info("Sending...")
             with open(output_video, 'rb') as video:
-                await update.message.reply_video(video=video, write_timeout=120)
+                await update.message.reply_video(video=video, write_timeout=300)
     
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         await update.message.reply_text(f"❌ {str(e)[:50]}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! 👋\nویدیو بفرست")
+    await update.message.reply_text("سلام! 👋\nویدیو بفرست و من اینترو رو بهش می‌چسبونم")
 
 def main():
     if not BOT_TOKEN:
