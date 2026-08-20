@@ -9,20 +9,18 @@ import threading
 import sqlite3
 from dotenv import load_dotenv
 
-# تلاش برای بارگذاری ابزار نمایش آمار سرور
 try:
     import psutil
     HAS_PSUTIL = True
 except ImportError:
     HAS_PSUTIL = False
 
-# بارگذاری متغیرهای محیطی
 load_dotenv()
 
 API_ID_STR = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID_STR = os.environ.get("ADMIN_ID") # دریافت آیدی ادمین
+ADMIN_ID_STR = os.environ.get("ADMIN_ID")
 
 if not API_ID_STR or not API_HASH or not BOT_TOKEN:
     print("\n" + "!"*60)
@@ -34,7 +32,6 @@ API_ID = int(API_ID_STR)
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else 0
 INTRO_FILE = "intro.png"
 
-# فعال‌سازی uvloop برای سرعت شبکه
 try:
     import uvloop
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -136,7 +133,7 @@ def get_video_info(file_path):
     res = subprocess.run(cmd, capture_output=True, text=True)
     data = json.loads(res.stdout)
     streams = data.get("streams", [])
-    if not streams: return 0.0, 1280, 720, "1000k"
+    if not streams: return 0.0, 1280, 720, "1000k", False
 
     stream = streams[0]
     width, height = int(stream.get("width", 1280)), int(stream.get("height", 720))
@@ -163,35 +160,50 @@ def get_video_info(file_path):
             except ValueError: pass
 
     if abs(rotation) in (90, 270): width, height = height, width
-    return duration, width, height, bit_rate_kb
+    
+    # بررسی هوشمند وجود لایه صدا در ویدیو
+    cmd_audio = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
+    res_audio = subprocess.run(cmd_audio, capture_output=True, text=True)
+    has_audio = len(res_audio.stdout.strip()) > 0
+    
+    return duration, width, height, bit_rate_kb, has_audio
 
 def generate_thumbnail(video_path, thumb_path):
     cmd = ["ffmpeg", "-y", "-ss", "00:00:01", "-i", video_path, "-vframes", "1", thumb_path]
     subprocess.run(cmd, capture_output=True)
 
-async def process_concat_with_progress(intro_path, input_path, output_path, total_duration, target_width, target_height, bit_rate, user_id):
+async def process_concat_with_progress(intro_path, input_path, output_path, total_duration, target_width, target_height, bit_rate, has_audio, user_id):
     target_width = target_width - (target_width % 2)
     target_height = target_height - (target_height % 2)
+
+    # مدیریت داینامیک صدا برای جلوگیری از کرش شدن
+    if has_audio:
+        audio_filter = "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
+        extra_inputs = []
+    else:
+        # ساخت صدای خالی برای ویدیوهای بی‌صدا
+        audio_filter = "[3:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
+        extra_inputs = ["-f", "lavfi", "-t", str(total_duration - 3), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
 
     cmd = [
         "ffmpeg", "-y", "-progress", "pipe:1",
         "-loop", "1", "-framerate", "30", "-t", "3", "-i", intro_path,                     
         "-i", input_path,                                                                  
-        "-f", "lavfi", "-t", "3", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-f", "lavfi", "-t", "3", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"
+    ] + extra_inputs + [
         "-filter_complex",
         f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=decrease[fg];"
         f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=crop,boxblur=20:20[bg];"
-        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30[v0];"
-        f"[1:v]scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v1];"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,setsar=1,fps=30[v0];"
+        f"[1:v]scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setsar=1,fps=30[v1];"
         "[2:a]aformat=sample_rates=44100:channel_layouts=stereo[a0];"
-        "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];"
-        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
+        f"{audio_filter}",
         "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", "veryfast", "-b:v", bit_rate, "-maxrate", bit_rate, "-bufsize", str(int(bit_rate.replace('k',''))*2)+"k", "-threads", "0",
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", output_path
     ]
 
-    process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     last_edit = 0
     session = get_session(user_id)
     
@@ -199,8 +211,10 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
         if session['cancel_flag']:
             process.kill()
             raise CancelledError("Operation cancelled by user.")
-        try: line = await asyncio.wait_for(process.stdout.readline(), timeout=1.0)
-        except asyncio.TimeoutError: continue
+        try: 
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=1.0)
+        except asyncio.TimeoutError: 
+            continue
         if not line: break
             
         line_str = line.decode('utf-8', errors='ignore').strip()
@@ -213,7 +227,14 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
                     bar = make_progress_bar(current_seconds, total_duration)
                     await update_dashboard(user_id, current_action=f"⚙️ در حال ساخت و چسباندن اینترو...\n{bar}")
             except Exception: pass
+            
     await process.wait()
+    
+    # چاپ لاگ اختصاصی در صورت کرش مجدد
+    if process.returncode != 0:
+        stderr = await process.stderr.read()
+        logging.error(f"FFmpeg Crash Info: {stderr.decode('utf-8', errors='ignore')}")
+        raise Exception("FFmpeg failed to process video")
 
 async def update_dashboard(user_id, current_action=""):
     session = get_session(user_id)
@@ -256,11 +277,11 @@ async def process_user_queue(client: Client, user_id: int):
             )
 
             intro_dur = 3.0  
-            main_dur, width, height, bit_rate = get_video_info(input_path)
+            main_dur, width, height, bit_rate, has_audio = get_video_info(input_path)
             total_duration = intro_dur + main_dur
 
             await update_dashboard(user_id, "⚙️ شروع پردازش ویدیو...")
-            await process_concat_with_progress(INTRO_FILE, input_path, output_path, total_duration, width, height, bit_rate, user_id)
+            await process_concat_with_progress(INTRO_FILE, input_path, output_path, total_duration, width, height, bit_rate, has_audio, user_id)
             generate_thumbnail(output_path, thumb_path)
 
             last_edit = [0]
