@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # بارگذاری متغیرهای فایل .env
 load_dotenv()
 
-# فعال‌سازی uvloop برای افزایش چند برابری سرعت شبکه در لینوکس
+# فعال‌سازی uvloop برای افزایش سرعت شبکه در لینوکس
 try:
     import uvloop
     uvloop.install()
@@ -24,7 +24,7 @@ from pyrogram.errors import FloodWait
 
 logging.basicConfig(level=logging.INFO)
 
-# --- وب‌سرور برای بیدار ماندن و سلامت سرور ---
+# --- وب‌سرور جهت حفظ سلامت و بیدار ماندن کانتینر ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -41,13 +41,12 @@ def start_health_check_server():
 
 threading.Thread(target=start_health_check_server, daemon=True).start()
 
-# --- تنظیمات ربات ---
+# --- تنظیمات متغیرهای محیطی ---
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 INTRO_FILE = "intro.mp4"
 
-# تنظیم ورکرها و انتقال همزمان برای حداکثر سرعت دانلود/آپلود
 app = Client(
     "intro_bot", 
     api_id=API_ID, 
@@ -57,14 +56,12 @@ app = Client(
     max_concurrent_transmissions=10
 )
 
-# ساخت نوار پیشرفت متنی
 def make_progress_bar(current, total):
     percentage = current * 100 / total if total > 0 else 0
     completed = int(percentage / 10)
     bar = "█" * completed + "░" * (10 - completed)
     return f"[{bar}] {percentage:.1f}%"
 
-# کالبک درصد پیشرفت برای دانلود و آپلود تلگرام (با فاصله ۵ ثانیه)
 async def telegram_progress(current, total, status_msg, action_text, last_edit):
     now = time.time()
     if now - last_edit[0] >= 5 or current == total:
@@ -98,9 +95,7 @@ def generate_thumbnail(video_path, thumb_path):
     ]
     subprocess.run(cmd, capture_output=True)
 
-# پردازش FFmpeg بهینه‌شده برای حفظ حجم و کیفیت
 async def process_concat_with_progress(intro_path, input_path, output_path, total_duration, target_width, target_height, status_msg):
-    # اطمینان از زوج بودن ابعاد ویدیو (الزام برخی کدک‌ها)
     target_width = target_width - (target_width % 2)
     target_height = target_height - (target_height % 2)
 
@@ -116,7 +111,7 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
         "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];"
         "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-threads", "0",
+        "-c:v", "libx264", "-preset", "superfast", "-crf", "22", "-threads", "0",
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         output_path
@@ -139,7 +134,6 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
                 current_seconds = microseconds / 1_000_000
                 now = time.time()
                 
-                # تنظیم روی ۵ ثانیه برای کاهش فشار روی تلگرام
                 if now - last_edit > 5 and total_duration > 0:
                     last_edit = now
                     bar = make_progress_bar(current_seconds, total_duration)
@@ -169,7 +163,6 @@ async def process_video(client: Client, message: Message):
     thumb_path = f"thumb_{message.id}.jpg"
 
     try:
-        # ۱. دانلود با نهایت سرعت ممکن
         last_edit = [0]
         input_path = await message.download(
             file_name=input_path,
@@ -177,19 +170,15 @@ async def process_video(client: Client, message: Message):
             progress_args=(status_msg, "📥 در حال دانلود ویدیو...", last_edit)
         )
 
-        # محاسبه زمان و ابعاد کل ویدیو (بر اساس ویدیوی اصلی کاربر)
         intro_dur, _, _ = get_video_info(INTRO_FILE)
         main_dur, width, height = get_video_info(input_path)
         total_duration = intro_dur + main_dur
 
-        # ۲. پردازش FFmpeg
         await status_msg.edit_text("⚙️ در حال شروع پردازش ویدیو...")
-        # ارسال ابعاد ویدیوی اصلی به تابع پردازش
         await process_concat_with_progress(INTRO_FILE, input_path, output_path, total_duration, width, height, status_msg)
 
         generate_thumbnail(output_path, thumb_path)
 
-        # ۳. آپلود با نهایت سرعت ممکن
         last_edit = [0]
         await status_msg.edit_text("📤 در حال شروع آپلود...")
         await client.send_video(
