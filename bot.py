@@ -2,15 +2,35 @@ import os
 import json
 import logging
 import subprocess
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 logging.basicConfig(level=logging.INFO)
 
+# وب‌سرور کوچک برای رضایت Render و بیدار ماندن ربات
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is active!")
+
+    def log_message(self, format, *args):
+        return  # خاموش کردن لاگ‌های اضافی وب‌سرور
+
+def start_health_check_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# اجرای وب‌سرور در یک Thread جداگانه
+threading.Thread(target=start_health_check_server, daemon=True).start()
+
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-INTRO_FILE = "intro.mp4"  # ویدیوی اینترو باید با همین نام در پروژه باشد
+INTRO_FILE = "intro.mp4"
 
 app = Client("intro_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -74,7 +94,7 @@ async def process_video(client: Client, message: Message):
     thumb_path = f"thumb_{message.id}.jpg"
 
     try:
-        await status_msg.edit_text("⚙️ در حال چسباندن اینترو و استانداردسازی کیفیت...")
+        await status_msg.edit_text("⚙️ در حال چسباندن اینترو و تنظیم کیفیت...")
         process_concat(INTRO_FILE, input_path, output_path)
 
         duration, width, height = get_video_info(output_path)
