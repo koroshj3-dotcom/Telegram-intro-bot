@@ -161,7 +161,6 @@ def get_video_info(file_path):
 
     if abs(rotation) in (90, 270): width, height = height, width
     
-    # بررسی هوشمند وجود لایه صدا در ویدیو
     cmd_audio = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
     res_audio = subprocess.run(cmd_audio, capture_output=True, text=True)
     has_audio = len(res_audio.stdout.strip()) > 0
@@ -176,12 +175,10 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
     target_width = target_width - (target_width % 2)
     target_height = target_height - (target_height % 2)
 
-    # مدیریت داینامیک صدا برای جلوگیری از کرش شدن
     if has_audio:
         audio_filter = "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
         extra_inputs = []
     else:
-        # ساخت صدای خالی برای ویدیوهای بی‌صدا
         audio_filter = "[3:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
         extra_inputs = ["-f", "lavfi", "-t", str(total_duration - 3), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
 
@@ -193,7 +190,7 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
     ] + extra_inputs + [
         "-filter_complex",
         f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=decrease[fg];"
-        f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=crop,boxblur=20:20[bg];"
+        f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=increase,crop={target_width}:{target_height},boxblur=20:20[bg];"
         f"[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,setsar=1,fps=30[v0];"
         f"[1:v]scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setsar=1,fps=30[v1];"
         "[2:a]aformat=sample_rates=44100:channel_layouts=stereo[a0];"
@@ -230,7 +227,6 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
             
     await process.wait()
     
-    # چاپ لاگ اختصاصی در صورت کرش مجدد
     if process.returncode != 0:
         stderr = await process.stderr.read()
         logging.error(f"FFmpeg Crash Info: {stderr.decode('utf-8', errors='ignore')}")
