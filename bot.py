@@ -1,14 +1,15 @@
 import os
+from dotenv import load_dotenv
+
+# ۱. بارگذاری متغیرها دقیقاً در همین نقطه (قبل از خواندن os.environ)
+load_dotenv()
+
 import json
 import time
 import asyncio
 import logging
 import subprocess
 import threading
-from dotenv import load_dotenv
-
-# بارگذاری متغیرهای فایل .env
-load_dotenv()
 
 # فعال‌سازی uvloop برای افزایش سرعت شبکه در لینوکس
 try:
