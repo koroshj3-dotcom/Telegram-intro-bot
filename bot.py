@@ -1,7 +1,8 @@
 import os
+import sys
 from dotenv import load_dotenv
 
-# ۱. بارگذاری متغیرها دقیقاً در همین نقطه (قبل از خواندن os.environ)
+# ۱. بارگذاری متغیرهای محیطی
 load_dotenv()
 
 import json
@@ -10,6 +11,19 @@ import asyncio
 import logging
 import subprocess
 import threading
+
+API_ID_STR = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+if not API_ID_STR or not API_HASH or not BOT_TOKEN:
+    print("\n" + "!"*60)
+    print("❌ خطای بحرانی: اطلاعات ورود تلگرام در فایل .env پیدا نشد!")
+    print("!"*60 + "\n")
+    sys.exit(1)
+
+API_ID = int(API_ID_STR)
+INTRO_FILE = "intro.mp4"
 
 # فعال‌سازی uvloop برای افزایش سرعت شبکه در لینوکس
 try:
@@ -42,19 +56,14 @@ def start_health_check_server():
 
 threading.Thread(target=start_health_check_server, daemon=True).start()
 
-# --- تنظیمات متغیرهای محیطی ---
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-INTRO_FILE = "intro.mp4"
-
+# --- تنظیمات بهینه‌شده کلاینت جهت جلوگیری از قطع شبکه ---
 app = Client(
     "intro_bot", 
     api_id=API_ID, 
     api_hash=API_HASH, 
     bot_token=BOT_TOKEN,
-    workers=16,
-    max_concurrent_transmissions=10
+    workers=4,
+    max_concurrent_transmissions=3
 )
 
 def make_progress_bar(current, total):
@@ -75,19 +84,50 @@ async def telegram_progress(current, total, status_msg, action_text, last_edit):
         except Exception:
             pass
 
+# --- محاسبه دقیق ابعاد و چرخش ویدیو ---
 def get_video_info(file_path):
     cmd = [
         "ffprobe", "-v", "error",
-        "-show_entries", "format=duration:stream=width,height",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,duration:stream_tags=rotate:side_data=rotation",
         "-of", "json", file_path
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)
     data = json.loads(res.stdout)
-    duration = float(data.get("format", {}).get("duration", 0))
-    streams = data.get("streams", [{}])
-    width = streams[0].get("width", 1280) if streams else 1280
-    height = streams[0].get("height", 720) if streams else 720
-    return duration, int(width), int(height)
+    
+    streams = data.get("streams", [])
+    if not streams:
+        return 0.0, 1280, 720
+
+    stream = streams[0]
+    width = int(stream.get("width", 1280))
+    height = int(stream.get("height", 720))
+    duration = float(stream.get("duration", 0))
+
+    if duration == 0:
+        cmd_fmt = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", file_path]
+        res_fmt = subprocess.run(cmd_fmt, capture_output=True, text=True)
+        data_fmt = json.loads(res_fmt.stdout)
+        duration = float(data_fmt.get("format", {}).get("duration", 0))
+
+    rotation = 0
+    tags = stream.get("tags", {})
+    if "rotate" in tags:
+        try:
+            rotation = int(tags["rotate"])
+        except ValueError:
+            pass
+    for side in stream.get("side_data_list", []):
+        if "rotation" in side:
+            try:
+                rotation = int(side["rotation"])
+            except ValueError:
+                pass
+
+    if abs(rotation) in (90, 270):
+        width, height = height, width
+
+    return duration, width, height
 
 def generate_thumbnail(video_path, thumb_path):
     cmd = [
@@ -96,6 +136,7 @@ def generate_thumbnail(video_path, thumb_path):
     ]
     subprocess.run(cmd, capture_output=True)
 
+# --- پردازش ویدیو با فشرده‌سازی استاندارد ---
 async def process_concat_with_progress(intro_path, input_path, output_path, total_duration, target_width, target_height, status_msg):
     target_width = target_width - (target_width % 2)
     target_height = target_height - (target_height % 2)
@@ -112,7 +153,7 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
         "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];"
         "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "superfast", "-crf", "22", "-threads", "0",
+        "-c:v", "libx264", "-preset", "faster", "-crf", "26", "-threads", "0",
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         output_path
