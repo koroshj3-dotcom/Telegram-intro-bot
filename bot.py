@@ -5,13 +5,22 @@ import asyncio
 import logging
 import subprocess
 import threading
+
+# فعال‌سازی uvloop برای افزایش چند برابری سرعت شبکه در لینوکس
+try:
+    import uvloop
+    uvloop.install()
+except ImportError:
+    pass
+
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import FloodWait
 
 logging.basicConfig(level=logging.INFO)
 
-# --- وب‌سرور برای بیدار ماندن و سلامت Render ---
+# --- وب‌سرور برای بیدار ماندن و سلامت سرور ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -34,7 +43,15 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 INTRO_FILE = "intro.mp4"
 
-app = Client("intro_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# تنظیم ورکرها و انتقال همزمان برای حداکثر سرعت دانلود/آپلود
+app = Client(
+    "intro_bot", 
+    api_id=API_ID, 
+    api_hash=API_HASH, 
+    bot_token=BOT_TOKEN,
+    workers=16,
+    max_concurrent_transmissions=10
+)
 
 # ساخت نوار پیشرفت متنی
 def make_progress_bar(current, total):
@@ -43,14 +60,16 @@ def make_progress_bar(current, total):
     bar = "█" * completed + "░" * (10 - completed)
     return f"[{bar}] {percentage:.1f}%"
 
-# کالبک درصد پیشرفت برای دانلود و آپلود تلگرام
+# کالبک درصد پیشرفت برای دانلود و آپلود تلگرام (با فاصله ۵ ثانیه)
 async def telegram_progress(current, total, status_msg, action_text, last_edit):
     now = time.time()
-    if now - last_edit[0] > 3 or current == total:
+    if now - last_edit[0] >= 5 or current == total:
         last_edit[0] = now
         bar = make_progress_bar(current, total)
         try:
             await status_msg.edit_text(f"{action_text}\n\n{bar}")
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
         except Exception:
             pass
 
@@ -112,7 +131,8 @@ async def process_concat_with_progress(intro_path, input_path, output_path, tota
                 current_seconds = microseconds / 1_000_000
                 now = time.time()
                 
-                if now - last_edit > 3 and total_duration > 0:
+                # تنظیم روی ۵ ثانیه برای کاهش فشار روی تلگرام
+                if now - last_edit > 5 and total_duration > 0:
                     last_edit = now
                     bar = make_progress_bar(current_seconds, total_duration)
                     await status_msg.edit_text(f"⚙️ در حال اضافه کردن اینترو...\n\n{bar}")
@@ -141,7 +161,7 @@ async def process_video(client: Client, message: Message):
     thumb_path = f"thumb_{message.id}.jpg"
 
     try:
-        # ۱. دانلود با درصد پیشرفت
+        # ۱. دانلود با نهایت سرعت ممکن
         last_edit = [0]
         input_path = await message.download(
             file_name=input_path,
@@ -154,13 +174,13 @@ async def process_video(client: Client, message: Message):
         main_dur, width, height = get_video_info(input_path)
         total_duration = intro_dur + main_dur
 
-        # ۲. پردازش FFmpeg با درصد پیشرفت
+        # ۲. پردازش FFmpeg
         await status_msg.edit_text("⚙️ در حال شروع پردازش ویدیو...")
         await process_concat_with_progress(INTRO_FILE, input_path, output_path, total_duration, status_msg)
 
         generate_thumbnail(output_path, thumb_path)
 
-        # ۳. آپلود با درصد پیشرفت
+        # ۳. آپلود با نهایت سرعت ممکن
         last_edit = [0]
         await status_msg.edit_text("📤 در حال شروع آپلود...")
         await client.send_video(
