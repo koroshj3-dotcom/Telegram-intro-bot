@@ -5,6 +5,10 @@ import asyncio
 import logging
 import subprocess
 import threading
+from dotenv import load_dotenv
+
+# بارگذاری متغیرهای فایل .env
+load_dotenv()
 
 # فعال‌سازی uvloop برای افزایش چند برابری سرعت شبکه در لینوکس
 try:
@@ -94,21 +98,25 @@ def generate_thumbnail(video_path, thumb_path):
     ]
     subprocess.run(cmd, capture_output=True)
 
-# پردازش FFmpeg با قابلیت محاسبه درصد پیشرفت لحظه‌ای
-async def process_concat_with_progress(intro_path, input_path, output_path, total_duration, status_msg):
+# پردازش FFmpeg بهینه‌شده برای حفظ حجم و کیفیت
+async def process_concat_with_progress(intro_path, input_path, output_path, total_duration, target_width, target_height, status_msg):
+    # اطمینان از زوج بودن ابعاد ویدیو (الزام برخی کدک‌ها)
+    target_width = target_width - (target_width % 2)
+    target_height = target_height - (target_height % 2)
+
     cmd = [
         "ffmpeg", "-y",
         "-progress", "pipe:1",
         "-i", intro_path,
         "-i", input_path,
         "-filter_complex",
-        "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v0];"
-        "[1:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v1];"
+        f"[0:v]scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v0];"
+        f"[1:v]scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v1];"
         "[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0];"
         "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];"
         "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "0",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-threads", "0",
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         output_path
@@ -169,14 +177,15 @@ async def process_video(client: Client, message: Message):
             progress_args=(status_msg, "📥 در حال دانلود ویدیو...", last_edit)
         )
 
-        # محاسبه زمان کل ویدیو (اینترو + ویدیوی اصلی)
+        # محاسبه زمان و ابعاد کل ویدیو (بر اساس ویدیوی اصلی کاربر)
         intro_dur, _, _ = get_video_info(INTRO_FILE)
         main_dur, width, height = get_video_info(input_path)
         total_duration = intro_dur + main_dur
 
         # ۲. پردازش FFmpeg
         await status_msg.edit_text("⚙️ در حال شروع پردازش ویدیو...")
-        await process_concat_with_progress(INTRO_FILE, input_path, output_path, total_duration, status_msg)
+        # ارسال ابعاد ویدیوی اصلی به تابع پردازش
+        await process_concat_with_progress(INTRO_FILE, input_path, output_path, total_duration, width, height, status_msg)
 
         generate_thumbnail(output_path, thumb_path)
 
